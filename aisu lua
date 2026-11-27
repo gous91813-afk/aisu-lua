@@ -1,0 +1,1686 @@
+-- Boss man's Leviathan Subjugation Suite (Louder "君を助けに来た" Sound Edition)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+local camera = Workspace.CurrentCamera
+
+-- 接続音声リスト（名前＆個別音量設定）
+local soundPresets = {
+    { name = "トゥットゥル～", id = "rbxassetid://132499787504568", volume = 2 },
+    { name = "エリス", id = "rbxassetid://129996662104577", volume = 6 },
+    { name = "君を助けに来た", id = "rbxassetid://93864502407900", volume = 10 }
+}
+local currentSoundIndex = 1
+local toggleKey = Enum.KeyCode.RightShift
+local isBindingKey = false
+
+-- 設定の保存・読み込み
+local configFileName = "LeviathanSubjugation_Config.json"
+
+local function saveConfig()
+    pcall(function()
+        if type(writefile) == "function" then
+            local data = {
+                soundIndex = currentSoundIndex,
+                toggleKeyName = toggleKey.Name
+            }
+            writefile(configFileName, HttpService:JSONEncode(data))
+        end
+    end)
+end
+
+local function loadConfig()
+    pcall(function()
+        if type(isfile) == "function" and type(readfile) == "function" and isfile(configFileName) then
+            local raw = readfile(configFileName)
+            local decoded = HttpService:JSONDecode(raw)
+            if type(decoded) == "table" then
+                if type(decoded.soundIndex) == "number" and soundPresets[decoded.soundIndex] then
+                    currentSoundIndex = decoded.soundIndex
+                end
+                if type(decoded.toggleKeyName) == "string" and Enum.KeyCode[decoded.toggleKeyName] then
+                    toggleKey = Enum.KeyCode[decoded.toggleKeyName]
+                end
+            end
+        end
+    end)
+end
+
+loadConfig()
+
+-- 安全なUI親要素の取得
+local function getSafeUiParent()
+    if type(gethui) == "function" then
+        local ok, res = pcall(gethui)
+        if ok and res then return res end
+    end
+    local ok = pcall(function()
+        local test = CoreGui.Name
+    end)
+    if ok then
+        return CoreGui
+    end
+    return player:WaitForChild("PlayerGui")
+end
+
+local uiParent = getSafeUiParent()
+
+-- 古いUI・雪Guiの完全消去
+pcall(function()
+    if uiParent:FindFirstChild("LeviathanSubjugationUI") then
+        uiParent.LeviathanSubjugationUI:Destroy()
+    end
+    if uiParent:FindFirstChild("FogClearSnowOverlayUI") then
+        uiParent.FogClearSnowOverlayUI:Destroy()
+    end
+    if player:FindFirstChild("PlayerGui") then
+        if player.PlayerGui:FindFirstChild("LeviathanSubjugationUI") then
+            player.PlayerGui.LeviathanSubjugationUI:Destroy()
+        end
+        if player.PlayerGui:FindFirstChild("FogClearSnowOverlayUI") then
+            player.PlayerGui.FogClearSnowOverlayUI:Destroy()
+        end
+    end
+end)
+
+-- State Variables
+local boatSpeed = 404
+local playerSpeed = 16
+local playerJump = 50
+local maxZoomDist = 600
+local cameraFov = 85
+local originalMaxZoom = player.CameraMaxZoomDistance or 128
+local originalFov = (camera and camera.FieldOfView) or 70
+
+local isConnected = false
+local removeFogEnabled = false
+local walkOnWaterEnabled = false
+local autoLivaEnabled = false
+local shipFreezeEnabled = false
+local autoDragonStormEnabled = false
+local playerEspEnabled = false
+local bossEspEnabled = false
+local speedBuffEnabled = false
+local jumpBuffEnabled = false
+local wideViewEnabled = true
+
+-- 吹雪モードプリセット（1: OFF, 2: 弱, 3: 中, 4: 強）
+local blizzardPresets = {
+    {
+        enabled = false,
+        label = "OFF",
+        color = Color3.fromRGB(70, 75, 90)
+    },
+    {
+        enabled = true,
+        label = "弱",
+        color = Color3.fromRGB(80, 125, 165),
+        fallSpeed = 0.10,
+        driftSpeed = 0.13,
+        windX = 4.5,
+        windZ = -1.8,
+        nearRate = 150,
+        farRate = 110,
+        nearSpeed = NumberRange.new(5, 8),
+        farSpeed = NumberRange.new(4, 7),
+        nearTransp = 0.50,
+        farTransp = 0.65,
+        flakeCount = 45
+    },
+    {
+        enabled = true,
+        label = "中",
+        color = Color3.fromRGB(95, 115, 185),
+        fallSpeed = 0.16,
+        driftSpeed = 0.24,
+        windX = 8.5,
+        windZ = -3.5,
+        nearRate = 320,
+        farRate = 240,
+        nearSpeed = NumberRange.new(8, 13),
+        farSpeed = NumberRange.new(7, 11),
+        nearTransp = 0.35,
+        farTransp = 0.50,
+        flakeCount = 80
+    },
+    {
+        enabled = true,
+        label = "強",
+        color = Color3.fromRGB(130, 95, 200),
+        fallSpeed = 0.25,
+        driftSpeed = 0.42,
+        windX = 15.5,
+        windZ = -6.5,
+        nearRate = 560,
+        farRate = 420,
+        nearSpeed = NumberRange.new(13, 21),
+        farSpeed = NumberRange.new(11, 18),
+        nearTransp = 0.22,
+        farTransp = 0.38,
+        flakeCount = 125
+    }
+}
+local blizzardLevel = 3 -- デフォルト: 中（1: OFF, 2: 弱, 3: 中, 4: 強）
+
+-- Storage Variables
+local currentSeat = nil
+local originalMaxSpeed = nil
+local waterFloorPart = nil
+local snowAnchorPart = nil
+local snowEmitterNear = nil
+local snowEmitterFar = nil
+local snowOverlayGui = nil
+local snowFlakes = {}
+local activeTab = 1
+local lastAttackTime = 0
+local lastSkillTime = 0
+local lastRockScanTime = 0
+local modifiedRockParts = {} -- [BasePart] = originalCanCollide
+
+-- Sound Setup
+local reconnectSound = Instance.new("Sound")
+reconnectSound.Name = "ReconnectSound"
+reconnectSound.SoundId = soundPresets[currentSoundIndex].id
+reconnectSound.Volume = soundPresets[currentSoundIndex].volume
+reconnectSound.Parent = camera or workspace
+
+-- ScreenGui Setup
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "LeviathanSubjugationUI"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 99999
+screenGui.Parent = uiParent
+
+-- Main Frame
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 260, 0, 440)
+frame.Position = UDim2.new(0.5, -130, 0.5, -220)
+frame.BackgroundColor3 = Color3.fromRGB(20, 18, 26)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.ClipsDescendants = true
+frame.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = frame
+
+-- Background Image
+local bgImage = Instance.new("ImageLabel")
+bgImage.Name = "BackgroundImage"
+bgImage.Size = UDim2.new(1.8, 0, 1, 0)
+bgImage.Position = UDim2.new(-0.8, 0, 0, 0)
+bgImage.BackgroundTransparency = 1
+bgImage.Image = "rbxassetid://105293296906662"
+bgImage.ScaleType = Enum.ScaleType.Fit
+bgImage.ZIndex = 1
+bgImage.Parent = frame
+
+-- Title
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 26)
+title.Position = UDim2.new(0, 10, 0, 8)
+title.Text = "Leviathan Subjugation"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextScaled = true
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.ZIndex = 10
+title.Parent = frame
+
+-- Tab Bar (3タブ構成: 海レ / 攻撃/ESP/強化 / 設定)
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(0.92, 0, 0, 30)
+tabBar.Position = UDim2.new(0.04, 0, 0, 38)
+tabBar.BackgroundColor3 = Color3.fromRGB(30, 28, 40)
+tabBar.BorderSizePixel = 0
+tabBar.Visible = false
+tabBar.ZIndex = 10
+tabBar.Parent = frame
+
+local tabBarCorner = Instance.new("UICorner")
+tabBarCorner.CornerRadius = UDim.new(0, 8)
+tabBarCorner.Parent = tabBar
+
+local tab1Btn = Instance.new("TextButton")
+tab1Btn.Size = UDim2.new(0.30, -2, 1, -4)
+tab1Btn.Position = UDim2.new(0, 2, 0, 2)
+tab1Btn.Text = "海レ"
+tab1Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+tab1Btn.BackgroundColor3 = Color3.fromRGB(65, 55, 100)
+tab1Btn.Font = Enum.Font.GothamBold
+tab1Btn.TextSize = 11
+tab1Btn.ZIndex = 11
+tab1Btn.Parent = tabBar
+
+local tab1Corner = Instance.new("UICorner")
+tab1Corner.CornerRadius = UDim.new(0, 6)
+tab1Corner.Parent = tab1Btn
+
+local tab2Btn = Instance.new("TextButton")
+tab2Btn.Size = UDim2.new(0.42, -2, 1, -4)
+tab2Btn.Position = UDim2.new(0.30, 1, 0, 2)
+tab2Btn.Text = "攻撃/ESP/強化"
+tab2Btn.TextColor3 = Color3.fromRGB(160, 160, 180)
+tab2Btn.BackgroundColor3 = Color3.fromRGB(30, 28, 40)
+tab2Btn.Font = Enum.Font.GothamBold
+tab2Btn.TextSize = 10
+tab2Btn.ZIndex = 11
+tab2Btn.Parent = tabBar
+
+local tab2Corner = Instance.new("UICorner")
+tab2Corner.CornerRadius = UDim.new(0, 6)
+tab2Corner.Parent = tab2Btn
+
+local tab3Btn = Instance.new("TextButton")
+tab3Btn.Size = UDim2.new(0.28, -2, 1, -4)
+tab3Btn.Position = UDim2.new(0.72, 0, 0, 2)
+tab3Btn.Text = "設定"
+tab3Btn.TextColor3 = Color3.fromRGB(160, 160, 180)
+tab3Btn.BackgroundColor3 = Color3.fromRGB(30, 28, 40)
+tab3Btn.Font = Enum.Font.GothamBold
+tab3Btn.TextSize = 11
+tab3Btn.ZIndex = 11
+tab3Btn.Parent = tabBar
+
+local tab3Corner = Instance.new("UICorner")
+tab3Corner.CornerRadius = UDim.new(0, 6)
+tab3Corner.Parent = tab3Btn
+
+-- Frames
+local seaEventFrame = Instance.new("Frame")
+seaEventFrame.Size = UDim2.new(1, 0, 0, 310)
+seaEventFrame.Position = UDim2.new(0, 0, 0, 74)
+seaEventFrame.BackgroundTransparency = 1
+seaEventFrame.Visible = false
+seaEventFrame.ZIndex = 10
+seaEventFrame.Parent = frame
+
+local combatFrame = Instance.new("Frame")
+combatFrame.Size = UDim2.new(1, 0, 0, 310)
+combatFrame.Position = UDim2.new(0, 0, 0, 74)
+combatFrame.BackgroundTransparency = 1
+combatFrame.Visible = false
+combatFrame.ZIndex = 10
+combatFrame.Parent = frame
+
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Size = UDim2.new(1, 0, 0, 310)
+settingsFrame.Position = UDim2.new(0, 0, 0, 74)
+settingsFrame.BackgroundTransparency = 1
+settingsFrame.Visible = false
+settingsFrame.ZIndex = 10
+settingsFrame.Parent = frame
+
+local function switchTab(tabNum)
+    activeTab = tabNum
+    seaEventFrame.Visible = (tabNum == 1) and isConnected
+    combatFrame.Visible   = (tabNum == 2) and isConnected
+    settingsFrame.Visible = (tabNum == 3) and isConnected
+
+    tab1Btn.BackgroundColor3 = (tabNum == 1) and Color3.fromRGB(65, 55, 100) or Color3.fromRGB(30, 28, 40)
+    tab1Btn.TextColor3       = (tabNum == 1) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 160, 180)
+
+    tab2Btn.BackgroundColor3 = (tabNum == 2) and Color3.fromRGB(65, 55, 100) or Color3.fromRGB(30, 28, 40)
+    tab2Btn.TextColor3       = (tabNum == 2) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 160, 180)
+
+    tab3Btn.BackgroundColor3 = (tabNum == 3) and Color3.fromRGB(65, 55, 100) or Color3.fromRGB(30, 28, 40)
+    tab3Btn.TextColor3       = (tabNum == 3) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(160, 160, 180)
+end
+
+tab1Btn.MouseButton1Click:Connect(function() if isConnected then switchTab(1) end end)
+tab2Btn.MouseButton1Click:Connect(function() if isConnected then switchTab(2) end end)
+tab3Btn.MouseButton1Click:Connect(function() if isConnected then switchTab(3) end end)
+
+-- Helper: Slider
+local function createSlider(yPos, minVal, maxVal, defaultVal, isFloat, parentFrame, onValueChanged)
+    local sliderFrame = Instance.new("Frame")
+    sliderFrame.Size = UDim2.new(0.88, 0, 0, 34)
+    sliderFrame.Position = UDim2.new(0.06, 0, 0, yPos)
+    sliderFrame.BackgroundTransparency = 1
+    sliderFrame.Visible = false
+    sliderFrame.ZIndex = 10
+    sliderFrame.Parent = parentFrame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 0, 14)
+    label.Position = UDim2.new(0, 0, 0, 0)
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 11
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.GothamBold
+    label.ZIndex = 10
+    label.Parent = sliderFrame
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, 0, 0, 6)
+    track.Position = UDim2.new(0, 0, 0, 19)
+    track.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+    track.BorderSizePixel = 0
+    track.ZIndex = 10
+    track.Parent = sliderFrame
+
+    local trackCorner = Instance.new("UICorner")
+    trackCorner.CornerRadius = UDim.new(1, 0)
+    trackCorner.Parent = track
+
+    local knob = Instance.new("ImageButton")
+    knob.Size = UDim2.new(0, 14, 0, 14)
+    knob.AnchorPoint = Vector2.new(0.5, 0.5)
+    knob.BackgroundColor3 = Color3.fromRGB(120, 120, 240)
+    knob.BorderSizePixel = 0
+    knob.ZIndex = 11
+    knob.Parent = track
+
+    local knobCorner = Instance.new("UICorner")
+    knobCorner.CornerRadius = UDim.new(1, 0)
+    knobCorner.Parent = knob
+
+    local dragging = false
+
+    local function updateValue(input)
+        local posX = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        knob.Position = UDim2.new(posX, 0, 0.5, 0)
+        local rawVal = minVal + (maxVal - minVal) * posX
+        local finalVal = isFloat and (math.floor(rawVal * 10) / 10) or math.floor(rawVal)
+        onValueChanged(finalVal, label)
+    end
+
+    local initRatio = (defaultVal - minVal) / (maxVal - minVal)
+    knob.Position = UDim2.new(initRatio, 0, 0.5, 0)
+    onValueChanged(defaultVal, label)
+
+    knob.InputBegan:Connect(function(input)
+        if isConnected and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType.Touch) then
+            dragging = true
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType.Touch) then
+            updateValue(input)
+        end
+    end)
+    
+    return sliderFrame
+end
+
+-- Helper: Button
+local function createButton(text, yPos, color, parentFrame, heightOverride)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.88, 0, 0, heightOverride or 30)
+    btn.Position = UDim2.new(0.06, 0, 0, yPos)
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.BackgroundColor3 = color
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.BackgroundTransparency = 0.2
+    btn.Visible = false
+    btn.ZIndex = 15
+    btn.Parent = parentFrame
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 10)
+    btnCorner.Parent = btn
+
+    return btn
+end
+
+-- Connect Button
+local connectToggleBtn = Instance.new("TextButton")
+connectToggleBtn.Size = UDim2.new(0.88, 0, 0, 34)
+connectToggleBtn.Position = UDim2.new(0.06, 0, 0, 392)
+connectToggleBtn.Text = "接続"
+connectToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+connectToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 130, 70)
+connectToggleBtn.Font = Enum.Font.GothamBold
+connectToggleBtn.TextSize = 12
+connectToggleBtn.BackgroundTransparency = 0.2
+connectToggleBtn.ZIndex = 10
+connectToggleBtn.Parent = frame
+
+local connectCorner = Instance.new("UICorner")
+connectCorner.CornerRadius = UDim.new(0, 10)
+connectCorner.Parent = connectToggleBtn
+
+-- TAB 1 Items (海レ)
+local speedSlider = createSlider(5, 1, 1000, boatSpeed, false, seaEventFrame, function(val, label)
+    boatSpeed = val
+    label.Text = "BOAT SPEED: " .. tostring(boatSpeed)
+    if currentSeat and not shipFreezeEnabled then
+        currentSeat.MaxSpeed = boatSpeed
+    end
+end)
+
+local removeFogBtn   = createButton("霧除去 OFF", 46, Color3.fromRGB(100, 60, 130), seaEventFrame, 32)
+local walkOnWaterBtn = createButton("水上歩行 OFF", 86, Color3.fromRGB(50, 110, 130), seaEventFrame, 32)
+local autoLivaBtn    = createButton("おーとりヴぁ OFF", 126, Color3.fromRGB(70, 130, 200), seaEventFrame, 32)
+local freezeBtn      = createButton("船固定 OFF", 166, Color3.fromRGB(70, 75, 85), seaEventFrame, 32)
+local tpBtn          = createButton("TP (運転席/助手席)", 206, Color3.fromRGB(60, 110, 75), seaEventFrame, 32)
+
+-- TAB 2 Items (攻撃 / ESP / 強化) 
+local pSpeedSlider = createSlider(5, 1, 1000, playerSpeed, false, combatFrame, function(val, label)
+    playerSpeed = val
+    label.Text = "WALK SPEED: " .. tostring(playerSpeed)
+end)
+local speedBuffBtn   = createButton("WalkSpeed Buff OFF", 42, Color3.fromRGB(120, 70, 180), combatFrame)
+
+local pJumpSlider = createSlider(82, 1, 1000, playerJump, false, combatFrame, function(val, label)
+    playerJump = val
+    label.Text = "JUMP POWER: " .. tostring(playerJump)
+end)
+local jumpBuffBtn    = createButton("JumpPower Buff OFF", 119, Color3.fromRGB(70, 140, 180), combatFrame)
+
+local dragonStormBtn = createButton("Dragon Storm Auto OFF", 159, Color3.fromRGB(180, 70, 70), combatFrame)
+local playerEspBtn   = createButton("Player ESP OFF", 197, Color3.fromRGB(80, 120, 180), combatFrame)
+local bossEspBtn     = createButton("Sea Boss ESP OFF", 235, Color3.fromRGB(180, 120, 70), combatFrame)
+
+-- TAB 3 Items (設定)
+local keybindInfoLabel = Instance.new("TextLabel")
+keybindInfoLabel.Size = UDim2.new(0.88, 0, 0, 16)
+keybindInfoLabel.Position = UDim2.new(0.06, 0, 0, 2)
+keybindInfoLabel.Text = "UI表示 / 非表示のキーバインド設定"
+keybindInfoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
+keybindInfoLabel.TextSize = 11
+keybindInfoLabel.BackgroundTransparency = 1
+keybindInfoLabel.Font = Enum.Font.GothamBold
+keybindInfoLabel.Visible = false
+keybindInfoLabel.ZIndex = 10
+keybindInfoLabel.Parent = settingsFrame
+
+local keybindBtn = createButton("UI開閉キー: " .. toggleKey.Name, 20, Color3.fromRGB(75, 85, 135), settingsFrame, 28)
+
+local keybindHintLabel = Instance.new("TextLabel")
+keybindHintLabel.Size = UDim2.new(0.88, 0, 0, 24)
+keybindHintLabel.Position = UDim2.new(0.06, 0, 0, 50)
+keybindHintLabel.Text = "※ボタンを押してから好きなキーを押すと\nいつでも開閉キーを変更できます"
+keybindHintLabel.TextColor3 = Color3.fromRGB(170, 170, 190)
+keybindHintLabel.TextSize = 10
+keybindHintLabel.BackgroundTransparency = 1
+keybindHintLabel.Font = Enum.Font.Gotham
+keybindHintLabel.Visible = false
+keybindHintLabel.ZIndex = 10
+keybindHintLabel.Parent = settingsFrame
+
+local soundInfoLabel = Instance.new("TextLabel")
+soundInfoLabel.Size = UDim2.new(0.88, 0, 0, 16)
+soundInfoLabel.Position = UDim2.new(0.06, 0, 0, 80)
+soundInfoLabel.Text = "接続時の音声切り替え"
+soundInfoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
+soundInfoLabel.TextSize = 11
+soundInfoLabel.BackgroundTransparency = 1
+soundInfoLabel.Font = Enum.Font.GothamBold
+soundInfoLabel.Visible = false
+soundInfoLabel.ZIndex = 10
+soundInfoLabel.Parent = settingsFrame
+
+local soundSwitchBtn = createButton("音声: " .. soundPresets[currentSoundIndex].name, 98, Color3.fromRGB(95, 75, 140), settingsFrame, 28)
+
+local soundHintLabel = Instance.new("TextLabel")
+soundHintLabel.Size = UDim2.new(0.88, 0, 0, 24)
+soundHintLabel.Position = UDim2.new(0.06, 0, 0, 128)
+soundHintLabel.Text = "※クリックで切り替え＆試聴できます\n※設定は自動保存され次回起動時も維持されます"
+soundHintLabel.TextColor3 = Color3.fromRGB(170, 170, 190)
+soundHintLabel.TextSize = 10
+soundHintLabel.BackgroundTransparency = 1
+soundHintLabel.Font = Enum.Font.Gotham
+soundHintLabel.Visible = false
+soundHintLabel.ZIndex = 10
+soundHintLabel.Parent = settingsFrame
+
+local blizzardInfoLabel = Instance.new("TextLabel")
+blizzardInfoLabel.Size = UDim2.new(0.88, 0, 0, 16)
+blizzardInfoLabel.Position = UDim2.new(0.06, 0, 0, 158)
+blizzardInfoLabel.Text = "吹雪エフェクト（OFF / 弱 / 中 / 強）"
+blizzardInfoLabel.TextColor3 = Color3.fromRGB(220, 220, 240)
+blizzardInfoLabel.TextSize = 11
+blizzardInfoLabel.BackgroundTransparency = 1
+blizzardInfoLabel.Font = Enum.Font.GothamBold
+blizzardInfoLabel.Visible = false
+blizzardInfoLabel.ZIndex = 10
+blizzardInfoLabel.Parent = settingsFrame
+
+local blizzardLevelBtn = createButton("吹雪: " .. blizzardPresets[blizzardLevel].label, 176, blizzardPresets[blizzardLevel].color, settingsFrame, 28)
+
+local blizzardHintLabel = Instance.new("TextLabel")
+blizzardHintLabel.Size = UDim2.new(0.88, 0, 0, 24)
+blizzardHintLabel.Position = UDim2.new(0.06, 0, 0, 206)
+blizzardHintLabel.Text = "※霧除去ON時の吹雪を OFF / 弱 / 中 / 強 で\nワンタップ切り替えできます"
+blizzardHintLabel.TextColor3 = Color3.fromRGB(170, 170, 190)
+blizzardHintLabel.TextSize = 10
+blizzardHintLabel.BackgroundTransparency = 1
+blizzardHintLabel.Font = Enum.Font.Gotham
+blizzardHintLabel.Visible = false
+blizzardHintLabel.ZIndex = 10
+blizzardHintLabel.Parent = settingsFrame
+
+local zoomSlider = createSlider(236, 128, 2000, maxZoomDist, false, settingsFrame, function(val, label)
+    maxZoomDist = val
+    -- ズーム倍率に応じてFOVも自然に広げる（70〜105）
+    cameraFov = math.floor(70 + ((maxZoomDist - 128) / (2000 - 128)) * 35)
+    label.Text = string.format("視点拡大: %d (FOV %d)", maxZoomDist, cameraFov)
+    if isConnected and wideViewEnabled then
+        pcall(function()
+            player.CameraMaxZoomDistance = maxZoomDist
+        end)
+        if camera then
+            camera.FieldOfView = cameraFov
+        end
+    end
+end)
+
+local zoomHintLabel = Instance.new("TextLabel")
+zoomHintLabel.Size = UDim2.new(0.88, 0, 0, 22)
+zoomHintLabel.Position = UDim2.new(0.06, 0, 0, 270)
+zoomHintLabel.Text = "※最大ズーム距離と視野角(FOV)を広げて\n周囲の海やボスを広く見渡せます"
+zoomHintLabel.TextColor3 = Color3.fromRGB(170, 170, 190)
+zoomHintLabel.TextSize = 10
+zoomHintLabel.BackgroundTransparency = 1
+zoomHintLabel.Font = Enum.Font.Gotham
+zoomHintLabel.Visible = false
+zoomHintLabel.ZIndex = 10
+zoomHintLabel.Parent = settingsFrame
+
+-- TP Menu
+local tpMenuFrame = Instance.new("Frame")
+tpMenuFrame.Size = UDim2.new(0.88, 0, 0, 75)
+tpMenuFrame.Position = UDim2.new(0.06, 0, 0, 180)
+tpMenuFrame.BackgroundColor3 = Color3.fromRGB(30, 28, 42)
+tpMenuFrame.BorderSizePixel = 0
+tpMenuFrame.Visible = false
+tpMenuFrame.ZIndex = 20
+tpMenuFrame.Parent = seaEventFrame
+
+local tpMenuCorner = Instance.new("UICorner")
+tpMenuCorner.CornerRadius = UDim.new(0, 10)
+tpMenuCorner.Parent = tpMenuFrame
+
+local driverBtn = Instance.new("TextButton")
+driverBtn.Size = UDim2.new(0.46, 0, 0, 30)
+driverBtn.Position = UDim2.new(0.03, 0, 0.1, 0)
+driverBtn.Text = "運転席"
+driverBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+driverBtn.BackgroundColor3 = Color3.fromRGB(70, 130, 90)
+driverBtn.Font = Enum.Font.GothamBold
+driverBtn.TextSize = 12
+driverBtn.ZIndex = 21
+driverBtn.Parent = tpMenuFrame
+
+local driverCorner = Instance.new("UICorner")
+driverCorner.CornerRadius = UDim.new(0, 8)
+driverCorner.Parent = driverBtn
+
+local passengerBtn = Instance.new("TextButton")
+passengerBtn.Size = UDim2.new(0.46, 0, 0, 30)
+passengerBtn.Position = UDim2.new(0.51, 0, 0.1, 0)
+passengerBtn.Text = "助手席"
+passengerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+passengerBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 140)
+passengerBtn.Font = Enum.Font.GothamBold
+passengerBtn.TextSize = 12
+passengerBtn.ZIndex = 21
+passengerBtn.Parent = tpMenuFrame
+
+local passengerCorner = Instance.new("UICorner")
+passengerCorner.CornerRadius = UDim.new(0, 8)
+passengerCorner.Parent = passengerBtn
+
+local closeTpMenuBtn = Instance.new("TextButton")
+closeTpMenuBtn.Size = UDim2.new(0.94, 0, 0, 24)
+closeTpMenuBtn.Position = UDim2.new(0.03, 0, 0.58, 0)
+closeTpMenuBtn.Text = "キャンセル"
+closeTpMenuBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+closeTpMenuBtn.BackgroundColor3 = Color3.fromRGB(60, 50, 60)
+closeTpMenuBtn.Font = Enum.Font.GothamBold
+closeTpMenuBtn.TextSize = 11
+closeTpMenuBtn.ZIndex = 21
+closeTpMenuBtn.Parent = tpMenuFrame
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 6)
+closeCorner.Parent = closeTpMenuBtn
+
+-- 接続音声の切り替え＆プレビュー再生
+soundSwitchBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    currentSoundIndex = (currentSoundIndex % #soundPresets) + 1
+    local selected = soundPresets[currentSoundIndex]
+    reconnectSound.SoundId = selected.id
+    reconnectSound.Volume = selected.volume
+    soundSwitchBtn.Text = "音声: " .. selected.name
+    saveConfig()
+    
+    reconnectSound.Parent = camera or workspace
+    reconnectSound:Play()
+end)
+
+-- キーバインド変更ボタンのクリック処理
+keybindBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    isBindingKey = true
+    keybindBtn.Text = "好きなキーを押してください..."
+    keybindBtn.BackgroundColor3 = Color3.fromRGB(200, 140, 50)
+end)
+
+-- キー入力監視（バインド変更モード & UI開閉トグル）
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+    if isBindingKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode ~= Enum.KeyCode.Unknown then
+            toggleKey = input.KeyCode
+            isBindingKey = false
+            keybindBtn.Text = "UI開閉キー: " .. toggleKey.Name
+            keybindBtn.BackgroundColor3 = Color3.fromRGB(75, 85, 135)
+            saveConfig()
+        end
+        return
+    end
+
+    if gameProcessedEvent then return end
+    if input.KeyCode == toggleKey then
+        frame.Visible = not frame.Visible
+        if not frame.Visible then
+            tpMenuFrame.Visible = false
+        end
+    end
+end)
+
+-- 吹雪エフェクトの作成・強度適用・更新・削除
+local function destroySnowEffect()
+    snowFlakes = {}
+    if snowOverlayGui then
+        pcall(function() snowOverlayGui:Destroy() end)
+        snowOverlayGui = nil
+    end
+    if snowEmitterNear then
+        pcall(function() snowEmitterNear:Destroy() end)
+        snowEmitterNear = nil
+    end
+    if snowEmitterFar then
+        pcall(function() snowEmitterFar:Destroy() end)
+        snowEmitterFar = nil
+    end
+    if snowAnchorPart then
+        pcall(function() snowAnchorPart:Destroy() end)
+        snowAnchorPart = nil
+    end
+end
+
+local function applyBlizzardIntensity()
+    local preset = blizzardPresets[blizzardLevel] or blizzardPresets[3]
+    blizzardLevelBtn.Text = "吹雪: " .. preset.label
+    blizzardLevelBtn.BackgroundColor3 = preset.color
+
+    if not preset.enabled then
+        destroySnowEffect()
+        return
+    end
+
+    if snowEmitterNear and snowEmitterNear.Parent then
+        snowEmitterNear.Rate = preset.nearRate
+        snowEmitterNear.Speed = preset.nearSpeed
+        snowEmitterNear.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, preset.nearTransp),
+            NumberSequenceKeypoint.new(0.75, math.min(1, preset.nearTransp + 0.12)),
+            NumberSequenceKeypoint.new(1, 1)
+        })
+    end
+
+    if snowEmitterFar and snowEmitterFar.Parent then
+        snowEmitterFar.Rate = preset.farRate
+        snowEmitterFar.Speed = preset.farSpeed
+        snowEmitterFar.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, preset.farTransp),
+            NumberSequenceKeypoint.new(0.8, math.min(1, preset.farTransp + 0.12)),
+            NumberSequenceKeypoint.new(1, 1)
+        })
+    end
+
+    if snowOverlayGui and snowOverlayGui.Parent then
+        destroySnowEffect()
+    end
+end
+
+local function ensureSnowEffect()
+    local preset = blizzardPresets[blizzardLevel] or blizzardPresets[3]
+    if not preset.enabled then
+        destroySnowEffect()
+        return
+    end
+
+    if not snowOverlayGui or not snowOverlayGui.Parent then
+        local overlay = Instance.new("ScreenGui")
+        overlay.Name = "FogClearSnowOverlayUI"
+        overlay.ResetOnSpawn = false
+        overlay.IgnoreGuiInset = true
+        overlay.DisplayOrder = 4
+        overlay.Parent = uiParent
+
+        snowOverlayGui = overlay
+        snowFlakes = {}
+
+        for i = 1, preset.flakeCount do
+            local isStreak = (i % 5 == 0)
+            local sizeW = isStreak and (blizzardLevel == 4 and 14 or 10) or (blizzardLevel == 2 and 3 or 4)
+            local sizeH = isStreak and 2 or (blizzardLevel == 2 and 3 or 4)
+
+            local flake = Instance.new("Frame")
+            flake.Name = "UniformSnow_" .. tostring(i)
+            flake.Size = UDim2.new(0, sizeW, 0, sizeH)
+            flake.Position = UDim2.new(math.random(), 0, math.random(), 0)
+            flake.BackgroundColor3 = Color3.fromRGB(245, 250, 255)
+            flake.BackgroundTransparency = isStreak and (preset.nearTransp + 0.16) or preset.nearTransp
+            flake.Rotation = isStreak and (blizzardLevel == 4 and -20 or -15) or 0
+            flake.BorderSizePixel = 0
+            flake.ZIndex = 1
+            flake.Parent = overlay
+
+            local flakeCorner = Instance.new("UICorner")
+            flakeCorner.CornerRadius = UDim.new(1, 0)
+            flakeCorner.Parent = flake
+
+            table.insert(snowFlakes, {
+                gui = flake,
+                x = math.random(),
+                y = math.random(),
+                fallSpeed = preset.fallSpeed * (0.9 + math.random() * 0.2),
+                driftSpeed = preset.driftSpeed * (0.9 + math.random() * 0.2),
+                swayAmp = 0.008,
+                swayFreq = 1.4,
+                phase = math.random() * math.pi * 2
+            })
+        end
+    end
+
+    if not snowAnchorPart or not snowAnchorPart.Parent or not snowEmitterNear or not snowEmitterNear.Parent or not snowEmitterFar or not snowEmitterFar.Parent then
+        if snowEmitterNear then pcall(function() snowEmitterNear:Destroy() end) end
+        if snowEmitterFar then pcall(function() snowEmitterFar:Destroy() end) end
+        if snowAnchorPart then pcall(function() snowAnchorPart:Destroy() end) end
+
+        local part = Instance.new("Part")
+        part.Name = "FogClearSnowAnchor"
+        part.Size = Vector3.new(130, 55, 130)
+        part.Transparency = 1
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.CastShadow = false
+        part.Parent = Workspace
+
+        local nearEmitter = Instance.new("ParticleEmitter")
+        nearEmitter.Name = "UniformBlizzardNear"
+        nearEmitter.Color = ColorSequence.new(Color3.fromRGB(248, 252, 255))
+        nearEmitter.LightEmission = 0.12
+        nearEmitter.Size = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.22),
+            NumberSequenceKeypoint.new(0.5, 0.28),
+            NumberSequenceKeypoint.new(1, 0.16)
+        })
+        nearEmitter.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, preset.nearTransp),
+            NumberSequenceKeypoint.new(0.75, math.min(1, preset.nearTransp + 0.12)),
+            NumberSequenceKeypoint.new(1, 1)
+        })
+        nearEmitter.Lifetime = NumberRange.new(3.5, 5.0)
+        nearEmitter.Rate = preset.nearRate
+        nearEmitter.Speed = preset.nearSpeed
+        nearEmitter.SpreadAngle = Vector2.new(75, 75)
+        nearEmitter.EmissionDirection = Enum.NormalId.Bottom
+        nearEmitter.Acceleration = Vector3.new(preset.windX, -2.0, preset.windZ)
+        nearEmitter.RotSpeed = NumberRange.new(-60, 60)
+        nearEmitter.Rotation = NumberRange.new(0, 360)
+        nearEmitter.Drag = 1.3
+        nearEmitter.Parent = part
+
+        local farEmitter = Instance.new("ParticleEmitter")
+        farEmitter.Name = "UniformBlizzardFar"
+        farEmitter.Color = ColorSequence.new(Color3.fromRGB(235, 245, 255))
+        farEmitter.LightEmission = 0.08
+        farEmitter.Size = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.45),
+            NumberSequenceKeypoint.new(0.5, 0.60),
+            NumberSequenceKeypoint.new(1, 0.35)
+        })
+        farEmitter.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, preset.farTransp),
+            NumberSequenceKeypoint.new(0.8, math.min(1, preset.farTransp + 0.12)),
+            NumberSequenceKeypoint.new(1, 1)
+        })
+        farEmitter.Lifetime = NumberRange.new(4.5, 6.5)
+        farEmitter.Rate = preset.farRate
+        farEmitter.Speed = preset.farSpeed
+        farEmitter.SpreadAngle = Vector2.new(85, 85)
+        farEmitter.EmissionDirection = Enum.NormalId.Bottom
+        farEmitter.Acceleration = Vector3.new(preset.windX * 1.08, -1.8, preset.windZ * 1.08)
+        farEmitter.RotSpeed = NumberRange.new(-45, 45)
+        farEmitter.Rotation = NumberRange.new(0, 360)
+        farEmitter.Drag = 1.5
+        farEmitter.Parent = part
+
+        snowAnchorPart = part
+        snowEmitterNear = nearEmitter
+        snowEmitterFar = farEmitter
+    end
+end
+
+local function updateSnowEffect(dt)
+    if not removeFogEnabled or not isConnected then return end
+    local preset = blizzardPresets[blizzardLevel] or blizzardPresets[3]
+    if not preset.enabled then
+        destroySnowEffect()
+        return
+    end
+
+    ensureSnowEffect()
+
+    local now = tick()
+    local windX = preset.windX + math.sin(now * 0.9) * 1.6
+    local windZ = preset.windZ + math.cos(now * 0.75) * 1.3
+
+    if snowAnchorPart and snowAnchorPart.Parent then
+        local basePos = (camera and camera.CFrame.Position)
+            or (player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character.HumanoidRootPart.Position)
+            or Vector3.zero
+
+        snowAnchorPart.CFrame = CFrame.new(basePos.X, basePos.Y + 6, basePos.Z)
+
+        if snowEmitterNear and snowEmitterNear.Parent then
+            snowEmitterNear.Acceleration = Vector3.new(windX, -2.0, windZ)
+        end
+        if snowEmitterFar and snowEmitterFar.Parent then
+            snowEmitterFar.Acceleration = Vector3.new(windX * 1.08, -1.8, windZ * 1.08)
+        end
+    end
+
+    for _, flake in ipairs(snowFlakes) do
+        if flake.gui and flake.gui.Parent then
+            flake.y = flake.y + flake.fallSpeed * dt
+            flake.x = flake.x + flake.driftSpeed * dt
+
+            if flake.y > 1.04 then
+                flake.y = -0.04
+            end
+            if flake.x > 1.04 then
+                flake.x = -0.04
+            end
+
+            local swayX = math.sin(now * flake.swayFreq + flake.phase) * flake.swayAmp
+            flake.gui.Position = UDim2.new(flake.x + swayX, 0, flake.y, 0)
+        end
+    end
+end
+
+-- Fog Clear（影なし・スッキリ視界 + 吹雪ON時のみエフェクト）
+local function updateFog()
+    if removeFogEnabled and isConnected then
+        Lighting.FogEnd = 9e9
+        Lighting.Brightness = 2.6
+        Lighting.ClockTime = 14
+        Lighting.GlobalShadows = false
+        
+        for _, v in ipairs(Lighting:GetDescendants()) do
+            if v:IsA("Atmosphere") then
+                v.Density = 0
+                v.Haze = 0
+                v.Glare = 0
+            elseif v:IsA("PostEffect") then
+                v.Enabled = false
+            end
+        end
+
+        local preset = blizzardPresets[blizzardLevel] or blizzardPresets[3]
+        if preset.enabled then
+            ensureSnowEffect()
+        else
+            destroySnowEffect()
+        end
+    end
+end
+
+-- 水上歩行の床クリーンアップ
+local function destroyWaterFloor()
+    if waterFloorPart then
+        waterFloorPart:Destroy()
+        waterFloorPart = nil
+    end
+    local character = player.Character
+    if character and character:FindFirstChildOfClass("Humanoid") then
+        character:FindFirstChildOfClass("Humanoid"):SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
+    end
+end
+
+-- 対象が海レボス（海王・テラーシャーク・サメ・船など / リヴァイアサン除外）か判定
+local function isTargetSeaBossModel(obj)
+    if not obj:IsA("Model") then return false end
+    local name = obj.Name:lower()
+    if name:find("leviathan") then
+        return false
+    end
+    return name:find("sea")
+        or name:find("terror")
+        or name:find("shark")
+        or name:find("ship")
+        or name:find("pirate")
+        or name:find("海王")
+end
+
+-- すり抜ける対象か判定
+local function isBypassableObstacle(part, shipModel)
+    if not part or not part:IsA("BasePart") then return false end
+    if part == waterFloorPart or part == snowAnchorPart then return false end
+    if player.Character and part:IsDescendantOf(player.Character) then return false end
+    if shipModel and part:IsDescendantOf(shipModel) then return false end
+
+    local ancestorModel = part:FindFirstAncestorOfClass("Model")
+    if ancestorModel then
+        if Players:GetPlayerFromCharacter(ancestorModel) then
+            return false
+        end
+        if isTargetSeaBossModel(ancestorModel) then
+            return false
+        end
+    end
+
+    local n = part.Name:lower()
+    local pName = (part.Parent and part.Parent.Name:lower()) or ""
+
+    if n:find("rock") or n:find("stone") or n:find("boulder") or n:find("cliff") or n:find("岩") or n:find("石")
+        or pName:find("rock") or pName:find("stone") or pName:find("boulder") or pName:find("岩") or pName:find("石") then
+        return true
+    end
+
+    if part.Anchored and part.Position.Y > -5 and part.Position.Y < 140 then
+        local size = part.Size
+        local maxDim = math.max(size.X, size.Y, size.Z)
+        local minDim = math.min(size.X, size.Y, size.Z)
+        if maxDim >= 3 and maxDim <= 180 and minDim >= 1.5 then
+            if not n:find("water") and not n:find("sea") and not n:find("ocean") then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- 近くの岩・障害物を自動で透ける（CanCollide = false）ようにする
+local function updateRockNoclip(originPos, shipModel)
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.CanCollide and isBypassableObstacle(obj, shipModel) then
+            if (obj.Position - originPos).Magnitude <= 450 then
+                if modifiedRockParts[obj] == nil then
+                    modifiedRockParts[obj] = obj.CanCollide
+                end
+                pcall(function()
+                    obj.CanCollide = false
+                end)
+            end
+        end
+    end
+end
+
+-- 変更した岩・障害物の当たり判定を元に戻す
+local function restoreRockCollisions()
+    for part, origCollide in pairs(modifiedRockParts) do
+        if part and part.Parent then
+            pcall(function()
+                part.CanCollide = origCollide
+            end)
+        end
+    end
+    modifiedRockParts = {}
+end
+
+-- TP Logic
+local function teleportToSeat(isDriverSeat)
+    local character = player.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local targetSeat = nil
+    local shortestDist = math.huge
+    
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        local isValidSeat = false
+        if isDriverSeat and obj:IsA("VehicleSeat") then
+            local nameLower = obj.Name:lower()
+            local parentName = obj.Parent and obj.Parent.Name:lower() or ""
+            if not nameLower:find("cannon") and not parentName:find("cannon") and not nameLower:find("turret") and not parentName:find("turret") then
+                isValidSeat = true
+            end
+        elseif not isDriverSeat and obj:IsA("Seat") and not obj:IsA("VehicleSeat") then
+            isValidSeat = true
+        end
+        
+        if isValidSeat and obj.Occupant == nil then
+            local dist = (obj.Position - character.HumanoidRootPart.Position).Magnitude
+            if dist < shortestDist then
+                shortestDist = dist
+                targetSeat = obj
+            end
+        end
+    end
+    
+    if targetSeat then
+        character.HumanoidRootPart.CFrame = targetSeat.CFrame + Vector3.new(0, 3, 0)
+    end
+    tpMenuFrame.Visible = false
+end
+
+-- 海レボス探索ヘルパー
+local function findNearestSeaBoss(originPos)
+    local nearestBoss = nil
+    local nearestPart = nil
+    local shortestDist = math.huge
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if isTargetSeaBossModel(obj) then
+            local b_humanoid = obj:FindFirstChildOfClass("Humanoid")
+            local isAlive = true
+            if b_humanoid and b_humanoid.Health <= 0 then
+                isAlive = false
+            end
+
+            if isAlive then
+                local targetPart = obj.PrimaryPart or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildOfClass("BasePart")
+                if targetPart then
+                    local dist = (targetPart.Position - originPos).Magnitude
+                    if dist < shortestDist and dist < 2500 then
+                        shortestDist = dist
+                        nearestBoss = obj
+                        nearestPart = targetPart
+                    end
+                end
+            end
+        end
+    end
+
+    return nearestBoss, nearestPart, shortestDist
+end
+
+-- 銃（射撃武器）を自動で探して装備するヘルパー
+local function equipGunWeapon(character, humanoid)
+    if not character or not humanoid then return end
+
+    local equipped = character:FindFirstChildOfClass("Tool")
+    local function isGunTool(tool)
+        if not tool or not tool:IsA("Tool") then return false end
+        local n = tool.Name:lower()
+        return n:find("gun")
+            or n:find("rifle")
+            or n:find("pistol")
+            or n:find("blaster")
+            or n:find("musket")
+            or n:find("bow")
+            or n:find("cannon")
+            or n:find("銃")
+            or tool:GetAttribute("WeaponType") == "Gun"
+    end
+
+    if isGunTool(equipped) then
+        return
+    end
+
+    local backpack = player:FindFirstChild("Backpack")
+    if backpack then
+        for _, item in ipairs(backpack:GetChildren()) do
+            if isGunTool(item) then
+                pcall(function()
+                    humanoid:EquipTool(item)
+                end)
+                return
+            end
+        end
+    end
+end
+
+-- 検知した海レボスへの自動攻撃・スキル発動ヘルパー
+local function attackSeaBoss(targetPart)
+    local now = tick()
+    if targetPart and camera then
+        pcall(function()
+            local lookAtPos = targetPart.Position + Vector3.new(0, 2, 0)
+            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, lookAtPos)
+        end)
+    end
+
+    if now - lastAttackTime >= 0.22 then
+        lastAttackTime = now
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+            task.wait(0.02)
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+        end)
+    end
+
+    if now - lastSkillTime >= 1.6 then
+        lastSkillTime = now
+        local skills = { Enum.KeyCode.Z, Enum.KeyCode.X }
+        local keyToSend = skills[math.random(1, #skills)]
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, keyToSend, false, game)
+            task.wait(0.04)
+            VirtualInputManager:SendKeyEvent(false, keyToSend, false, game)
+        end)
+    end
+end
+
+-- 船を指定方向（または前方）へ自動前進させるヘルパー
+local function driveBoatToward(seat, dirXZ, speed)
+    if not seat or not seat.Parent then return end
+    pcall(function()
+        seat.Throttle = 1
+    end)
+
+    local flatDir = dirXZ
+    if not flatDir or flatDir.Magnitude < 0.01 then
+        local forward = seat.CFrame.LookVector
+        flatDir = Vector3.new(forward.X, 0, forward.Z)
+    end
+
+    if flatDir.Magnitude > 0.01 then
+        flatDir = flatDir.Unit
+        for _, part in ipairs(seat.Parent:GetDescendants()) do
+            if part:IsA("BasePart") and not part.Anchored then
+                pcall(function()
+                    part.AssemblyLinearVelocity = Vector3.new(flatDir.X * speed, part.AssemblyLinearVelocity.Y, flatDir.Z * speed)
+                end)
+            end
+        end
+    end
+end
+
+-- スタイリッシュESP
+local function updateOrCreateEsp(targetObj, textContent, accentColor, customBillboardName)
+    if not targetObj then return end
+    local billboard = targetObj:FindFirstChild(customBillboardName)
+    
+    if not billboard then
+        billboard = Instance.new("BillboardGui")
+        billboard.Name = customBillboardName
+        billboard.Size = UDim2.new(0, 180, 0, 56)
+        billboard.StudsOffset = Vector3.new(0, 3.2, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Adornee = targetObj
+        billboard.Parent = targetObj
+        
+        local bgPanel = Instance.new("Frame")
+        bgPanel.Name = "EspBg"
+        bgPanel.Size = UDim2.new(1, 0, 1, 0)
+        bgPanel.BackgroundColor3 = Color3.fromRGB(15, 14, 22)
+        bgPanel.BackgroundTransparency = 0.35
+        bgPanel.BorderSizePixel = 0
+        bgPanel.Parent = billboard
+        
+        local panelCorner = Instance.new("UICorner")
+        panelCorner.CornerRadius = UDim.new(0, 6)
+        panelCorner.Parent = bgPanel
+        
+        local accentLine = Instance.new("Frame")
+        accentLine.Name = "AccentLine"
+        accentLine.Size = UDim2.new(0, 4, 1, 0)
+        accentLine.BackgroundColor3 = accentColor
+        accentLine.BorderSizePixel = 0
+        accentLine.Parent = bgPanel
+        
+        local lineCorner = Instance.new("UICorner")
+        lineCorner.CornerRadius = UDim.new(0, 2)
+        lineCorner.Parent = accentLine
+        
+        local label = Instance.new("TextLabel")
+        label.Name = "EspText"
+        label.Size = UDim2.new(1, -10, 1, 0)
+        label.Position = UDim2.new(0, 8, 0, 0)
+        label.BackgroundTransparency = 1
+        label.TextScaled = false
+        label.TextSize = 11
+        label.Font = Enum.Font.GothamBold
+        label.TextColor3 = Color3.fromRGB(240, 240, 255)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = bgPanel
+    end
+    
+    local bgPanel = billboard:FindFirstChild("EspBg")
+    if bgPanel then
+        local accentLine = bgPanel:FindFirstChild("AccentLine")
+        if accentLine then accentLine.BackgroundColor3 = accentColor end
+        
+        local textLabel = bgPanel:FindFirstChild("EspText")
+        if textLabel then
+            textLabel.Text = textContent
+        end
+    end
+end
+
+local function clearEsp(targetObj, customBillboardName)
+    if targetObj and targetObj:FindFirstChild(customBillboardName) then
+        targetObj[customBillboardName]:Destroy()
+    end
+end
+
+-- Button Listeners
+removeFogBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    removeFogEnabled = not removeFogEnabled
+    removeFogBtn.Text = "霧除去 " .. (removeFogEnabled and "ON" or "OFF")
+    removeFogBtn.BackgroundColor3 = removeFogEnabled and Color3.fromRGB(150, 80, 200) or Color3.fromRGB(100, 60, 130)
+    if removeFogEnabled then 
+        updateFog() 
+    else 
+        Lighting.FogEnd = 1000 
+        Lighting.Brightness = 1
+        Lighting.GlobalShadows = true
+        destroySnowEffect()
+    end
+end)
+
+blizzardLevelBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    blizzardLevel = (blizzardLevel % #blizzardPresets) + 1
+    applyBlizzardIntensity()
+    local preset = blizzardPresets[blizzardLevel]
+    if removeFogEnabled and preset and preset.enabled then
+        ensureSnowEffect()
+    end
+end)
+
+walkOnWaterBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    walkOnWaterEnabled = not walkOnWaterEnabled
+    walkOnWaterBtn.Text = "水上歩行 " .. (walkOnWaterEnabled and "ON" or "OFF")
+    walkOnWaterBtn.BackgroundColor3 = walkOnWaterEnabled and Color3.fromRGB(70, 160, 180) or Color3.fromRGB(50, 110, 130)
+    if not walkOnWaterEnabled then destroyWaterFloor() end
+end)
+
+autoLivaBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    autoLivaEnabled = not autoLivaEnabled
+    autoLivaBtn.Text = "おーとりヴぁ " .. (autoLivaEnabled and "ON" or "OFF")
+    autoLivaBtn.BackgroundColor3 = autoLivaEnabled and Color3.fromRGB(100, 200, 120) or Color3.fromRGB(70, 130, 200)
+    if not autoLivaEnabled then
+        restoreRockCollisions()
+    end
+end)
+
+dragonStormBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    autoDragonStormEnabled = not autoDragonStormEnabled
+    dragonStormBtn.Text = "Dragon Storm Auto " .. (autoDragonStormEnabled and "ON" or "OFF")
+    dragonStormBtn.BackgroundColor3 = autoDragonStormEnabled and Color3.fromRGB(220, 80, 80) or Color3.fromRGB(180, 70, 70)
+end)
+
+playerEspBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    playerEspEnabled = not playerEspEnabled
+    playerEspBtn.Text = "Player ESP " .. (playerEspEnabled and "ON" or "OFF")
+    playerEspBtn.BackgroundColor3 = playerEspEnabled and Color3.fromRGB(100, 150, 220) or Color3.fromRGB(80, 120, 180)
+    
+    if not playerEspEnabled then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character then 
+                clearEsp(p.Character:FindFirstChild("Head") or p.Character, "PlayerESP_UI") 
+            end
+        end
+    end
+end)
+
+bossEspBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    bossEspEnabled = not bossEspEnabled
+    bossEspBtn.Text = "Sea Boss ESP " .. (bossEspEnabled and "ON" or "OFF")
+    bossEspBtn.BackgroundColor3 = bossEspEnabled and Color3.fromRGB(220, 150, 90) or Color3.fromRGB(180, 120, 70)
+    
+    if not bossEspEnabled then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if isTargetSeaBossModel(obj) then
+                clearEsp(obj.PrimaryPart or obj, "BossESP_UI")
+            end
+        end
+    end
+end)
+
+speedBuffBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    speedBuffEnabled = not speedBuffEnabled
+    speedBuffBtn.Text = "WalkSpeed Buff " .. (speedBuffEnabled and "ON" or "OFF")
+    speedBuffBtn.BackgroundColor3 = speedBuffEnabled and Color3.fromRGB(150, 80, 220) or Color3.fromRGB(120, 70, 180)
+end)
+
+jumpBuffBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    jumpBuffEnabled = not jumpBuffEnabled
+    jumpBuffBtn.Text = "JumpPower Buff " .. (jumpBuffEnabled and "ON" or "OFF")
+    jumpBuffBtn.BackgroundColor3 = jumpBuffEnabled and Color3.fromRGB(50, 180, 220) or Color3.fromRGB(70, 140, 180)
+end)
+
+tpBtn.MouseButton1Click:Connect(function() if isConnected then tpMenuFrame.Visible = not tpMenuFrame.Visible end end)
+driverBtn.MouseButton1Click:Connect(function() teleportToSeat(true) end)
+passengerBtn.MouseButton1Click:Connect(function() teleportToSeat(false) end)
+closeTpMenuBtn.MouseButton1Click:Connect(function() tpMenuFrame.Visible = false end)
+
+freezeBtn.MouseButton1Click:Connect(function()
+    if not isConnected then return end
+    shipFreezeEnabled = not shipFreezeEnabled
+    freezeBtn.Text = "船固定 " .. (shipFreezeEnabled and "ON" or "OFF")
+    freezeBtn.BackgroundColor3 = shipFreezeEnabled and Color3.fromRGB(100, 110, 130) or Color3.fromRGB(70, 75, 85)
+    
+    local character = player.Character
+    if character and character:FindFirstChildOfClass("Humanoid") then
+        local seat = character.Humanoid.SeatPart
+        if seat and seat.Parent then
+            for _, part in ipairs(seat.Parent:GetDescendants()) do
+                if part:IsA("BasePart") then part.Anchored = shipFreezeEnabled end
+            end
+        end
+    end
+end)
+
+-- Reconnect Toggle
+connectToggleBtn.MouseButton1Click:Connect(function()
+    isConnected = not isConnected
+    tpMenuFrame.Visible = false
+    isBindingKey = false
+
+    tabBar.Visible = isConnected
+    speedSlider.Visible = isConnected
+    
+    removeFogBtn.Visible = isConnected
+    walkOnWaterBtn.Visible = isConnected
+    autoLivaBtn.Visible = isConnected
+    freezeBtn.Visible = isConnected
+    tpBtn.Visible = isConnected
+    
+    pSpeedSlider.Visible = isConnected
+    speedBuffBtn.Visible = isConnected
+    pJumpSlider.Visible = isConnected
+    jumpBuffBtn.Visible = isConnected
+    dragonStormBtn.Visible = isConnected
+    playerEspBtn.Visible = isConnected
+    bossEspBtn.Visible = isConnected
+
+    keybindInfoLabel.Visible = isConnected
+    keybindBtn.Visible = isConnected
+    keybindHintLabel.Visible = isConnected
+    soundInfoLabel.Visible = isConnected
+    soundSwitchBtn.Visible = isConnected
+    soundHintLabel.Visible = isConnected
+    blizzardInfoLabel.Visible = isConnected
+    blizzardLevelBtn.Visible = isConnected
+    blizzardHintLabel.Visible = isConnected
+    zoomSlider.Visible = isConnected
+    zoomHintLabel.Visible = isConnected
+    
+    switchTab(activeTab)
+
+    if isConnected then
+        originalMaxZoom = player.CameraMaxZoomDistance or 128
+        if camera then
+            originalFov = camera.FieldOfView
+        end
+
+        local selected = soundPresets[currentSoundIndex]
+        reconnectSound.SoundId = selected.id
+        reconnectSound.Volume = selected.volume
+        reconnectSound.Parent = camera or workspace
+        reconnectSound:Play()
+        connectToggleBtn.Text = "接続解除"
+        connectToggleBtn.BackgroundColor3 = Color3.fromRGB(130, 50, 50)
+    else
+        connectToggleBtn.Text = "接続"
+        connectToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 130, 70)
+        
+        autoLivaEnabled = false
+        shipFreezeEnabled = false
+        removeFogEnabled = false
+        walkOnWaterEnabled = false
+        autoDragonStormEnabled = false
+        playerEspEnabled = false
+        bossEspEnabled = false
+        speedBuffEnabled = false
+        jumpBuffEnabled = false
+        destroyWaterFloor()
+        destroySnowEffect()
+        restoreRockCollisions()
+
+        pcall(function()
+            player.CameraMaxZoomDistance = originalMaxZoom
+        end)
+        if camera then
+            camera.FieldOfView = originalFov
+        end
+        
+        if currentSeat and originalMaxSpeed then 
+            currentSeat.MaxSpeed = originalMaxSpeed 
+            currentSeat = nil
+        end
+        
+        removeFogBtn.Text = "霧除去 OFF"
+        removeFogBtn.BackgroundColor3 = Color3.fromRGB(100, 60, 130)
+        blizzardLevel = 3
+        blizzardLevelBtn.Text = "吹雪: " .. blizzardPresets[blizzardLevel].label
+        blizzardLevelBtn.BackgroundColor3 = blizzardPresets[blizzardLevel].color
+        walkOnWaterBtn.Text = "水上歩行 OFF"
+        walkOnWaterBtn.BackgroundColor3 = Color3.fromRGB(50, 110, 130)
+        autoLivaBtn.Text = "おーとりヴぁ OFF"
+        autoLivaBtn.BackgroundColor3 = Color3.fromRGB(70, 130, 200)
+        freezeBtn.Text = "船固定 OFF"
+        freezeBtn.BackgroundColor3 = Color3.fromRGB(70, 75, 85)
+        speedBuffBtn.Text = "WalkSpeed Buff OFF"
+        speedBuffBtn.BackgroundColor3 = Color3.fromRGB(120, 70, 180)
+        jumpBuffBtn.Text = "JumpPower Buff OFF"
+        jumpBuffBtn.BackgroundColor3 = Color3.fromRGB(70, 140, 180)
+        dragonStormBtn.Text = "Dragon Storm Auto OFF"
+        dragonStormBtn.BackgroundColor3 = Color3.fromRGB(180, 70, 70)
+        playerEspBtn.Text = "Player ESP OFF"
+        playerEspBtn.BackgroundColor3 = Color3.fromRGB(80, 120, 180)
+        bossEspBtn.Text = "Sea Boss ESP OFF"
+        bossEspBtn.BackgroundColor3 = Color3.fromRGB(180, 120, 70)
+        keybindBtn.Text = "UI開閉キー: " .. toggleKey.Name
+        keybindBtn.BackgroundColor3 = Color3.fromRGB(75, 85, 135)
+        soundSwitchBtn.Text = "音声: " .. soundPresets[currentSoundIndex].name
+    end
+end)
+
+-- Main Physics, Expanded Camera View, Blizzard Toggle/Intensity, Auto Rock Bypass, Auto Forward & Sea-Boss Attack Loop
+RunService.RenderStepped:Connect(function(dt)
+    if not isConnected then return end
+
+    if wideViewEnabled then
+        pcall(function()
+            if player.CameraMaxZoomDistance < maxZoomDist then
+                player.CameraMaxZoomDistance = maxZoomDist
+            end
+        end)
+        if camera and math.abs(camera.FieldOfView - cameraFov) > 0.5 then
+            camera.FieldOfView = cameraFov
+        end
+    end
+    
+    if removeFogEnabled then
+        updateFog()
+        updateSnowEffect(dt or 0.016)
+    end
+    
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local myHrp = hrp
+    
+    if humanoid then
+        if speedBuffEnabled then
+            humanoid.WalkSpeed = playerSpeed
+        end
+        if jumpBuffEnabled then
+            pcall(function()
+                humanoid.JumpPower = playerJump
+                humanoid.UseJumpPower = true
+            end)
+        end
+    end
+    
+    if playerEspEnabled then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player and p.Character then
+                local char = p.Character
+                local head = char:FindFirstChild("Head")
+                local p_humanoid = char:FindFirstChildOfClass("Humanoid")
+                local p_hrp = char:FindFirstChild("HumanoidRootPart")
+                
+                if head and p_humanoid then
+                    local hp = math.floor(p_humanoid.Health)
+                    local maxHp = math.floor(p_humanoid.MaxHealth)
+                    local dist = (myHrp and p_hrp) and math.floor((p_hrp.Position - myHrp.Position).Magnitude) or 0
+                    
+                    local displayLv = "Lv.Max"
+                    if p:FindFirstChild("Data") and p.Data:FindFirstChild("Level") then
+                        displayLv = "Lv." .. tostring(p.Data.Level.Value)
+                    end
+                    
+                    local teamName = p.Team and p.Team.Name:lower() or ""
+                    local accentColor = Color3.fromRGB(255, 75, 75)
+                    local teamLabel = "[海賊]"
+                    
+                    if teamName:find("marine") or teamName:find("海軍") then
+                        accentColor = Color3.fromRGB(0, 210, 255)
+                        teamLabel = "[海軍]"
+                    end
+                    
+                    local infoText = string.format("%s %s\n(%s) HP: %d/%d  距離: %dm", teamLabel, p.Name, displayLv, hp, maxHp, dist)
+                    updateOrCreateEsp(head, infoText, accentColor, "PlayerESP_UI")
+                end
+            end
+        end
+    end
+    
+    if bossEspEnabled then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if isTargetSeaBossModel(obj) then
+                local targetPart = obj.PrimaryPart or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildOfClass("BasePart")
+                local b_humanoid = obj:FindFirstChildOfClass("Humanoid")
+                
+                if targetPart then
+                    local hpStr = b_humanoid and string.format("HP: %d/%d", math.floor(b_humanoid.Health), math.floor(b_humanoid.MaxHealth)) or "HP: Unknown"
+                    local dist = myHrp and math.floor((targetPart.Position - myHrp.Position).Magnitude) or 0
+                    local bossText = string.format("[SEA BOSS] %s\n%s  距離: %dm", obj.Name, hpStr, dist)
+                    
+                    updateOrCreateEsp(targetPart, bossText, Color3.fromRGB(255, 150, 0), "BossESP_UI")
+                end
+            end
+        end
+    end
+    
+    if not character then return end
+
+    -- 水上歩行
+    if walkOnWaterEnabled and humanoid and not humanoid.SeatPart then
+        if myHrp then
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.Swimming, false)
+
+            if not waterFloorPart or not waterFloorPart.Parent then
+                waterFloorPart = Instance.new("Part")
+                waterFloorPart.Name = "DynamicWaterFloor"
+                waterFloorPart.Size = Vector3.new(16, 0.4, 16)
+                waterFloorPart.Transparency = 1
+                waterFloorPart.Anchored = true
+                waterFloorPart.CanCollide = true
+                waterFloorPart.Parent = Workspace
+            end
+
+            waterFloorPart.CFrame = CFrame.new(myHrp.Position.X, 1.0, myHrp.Position.Z)
+        end
+    else
+        destroyWaterFloor()
+    end
+
+    -- VehicleSeat 速度上書き
+    local activeVehicleSeat = nil
+    if humanoid and humanoid.SeatPart and humanoid.SeatPart:IsA("VehicleSeat") then
+        activeVehicleSeat = humanoid.SeatPart
+        if currentSeat ~= activeVehicleSeat then
+            if currentSeat and originalMaxSpeed then
+                currentSeat.MaxSpeed = originalMaxSpeed
+            end
+            currentSeat = activeVehicleSeat
+            originalMaxSpeed = activeVehicleSeat.MaxSpeed
+        end
+
+        if not shipFreezeEnabled then
+            activeVehicleSeat.MaxSpeed = boatSpeed
+        end
+    else
+        if currentSeat and originalMaxSpeed then
+            currentSeat.MaxSpeed = originalMaxSpeed
+            currentSeat = nil
+        end
+    end
+
+    -- ★ おーとりヴぁ：岩をすり抜けながら自動で前へ進み、検知した海レボスを攻撃する
+    if autoLivaEnabled and myHrp and humanoid then
+        local now = tick()
+        local shipModel = activeVehicleSeat and activeVehicleSeat.Parent or nil
+        if now - lastRockScanTime >= 0.35 then
+            lastRockScanTime = now
+            updateRockNoclip(myHrp.Position, shipModel)
+        end
+
+        local bossModel, bossPart, bossDist = findNearestSeaBoss(myHrp.Position)
+
+        if bossPart then
+            equipGunWeapon(character, humanoid)
+
+            local flatGoal = Vector3.new(bossPart.Position.X, myHrp.Position.Y, bossPart.Position.Z)
+            local toBoss = flatGoal - myHrp.Position
+            local distFlat = toBoss.Magnitude
+
+            if activeVehicleSeat then
+                if distFlat > 25 then
+                    driveBoatToward(activeVehicleSeat, toBoss, math.clamp(boatSpeed * 0.2, 35, 110))
+                else
+                    pcall(function()
+                        activeVehicleSeat.Throttle = 0
+                    end)
+                end
+            else
+                if distFlat > 12 then
+                    local dir = toBoss.Unit
+                    myHrp.CFrame = CFrame.lookAt(myHrp.Position, Vector3.new(bossPart.Position.X, myHrp.Position.Y, bossPart.Position.Z))
+                    local moveSpeed = math.max(playerSpeed, 55)
+                    myHrp.AssemblyLinearVelocity = Vector3.new(dir.X * moveSpeed, myHrp.AssemblyLinearVelocity.Y, dir.Z * moveSpeed)
+                else
+                    myHrp.CFrame = CFrame.lookAt(myHrp.Position, Vector3.new(bossPart.Position.X, myHrp.Position.Y, bossPart.Position.Z))
+                end
+            end
+
+            if bossDist <= 250 then
+                attackSeaBoss(bossPart)
+            end
+        else
+            -- ボスがいない間は自動で前へ進む
+            if activeVehicleSeat then
+                driveBoatToward(activeVehicleSeat, nil, math.clamp(boatSpeed * 0.2, 35, 110))
+            else
+                local forward = myHrp.CFrame.LookVector
+                local flatForward = Vector3.new(forward.X, 0, forward.Z)
+                if flatForward.Magnitude > 0.01 then
+                    flatForward = flatForward.Unit
+                    local cruiseSpeed = math.max(playerSpeed, 50)
+                    myHrp.AssemblyLinearVelocity = Vector3.new(flatForward.X * cruiseSpeed, myHrp.AssemblyLinearVelocity.Y, flatForward.Z * cruiseSpeed)
+                end
+            end
+        end
+    end
+end)
